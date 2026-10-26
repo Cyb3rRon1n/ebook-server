@@ -16,7 +16,7 @@ Both sites use one login: the Books account.
 You need a Linux machine (or WSL2) with [Docker](https://docs.docker.com/engine/install/) and a WireGuard VPN account for downloads. Proton VPN, Mullvad and others work; see the [gluetun provider list](https://github.com/qdm12/gluetun-wiki).
 
 ```bash
-git clone https://github.com/OWNER/ebook-server.git
+git clone https://github.com/Cyb3rRon1n/ebook-server.git
 cd ebook-server
 ./setup.sh
 ```
