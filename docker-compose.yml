@@ -1,0 +1,139 @@
+# Self-hosted ebook library with Send-to-Kindle - a Kindle Unlimited replacement.
+#   Books     (Calibre-Web Automated)  http://<host>:8083  - the library; "Send to eReader" emails a book to a Kindle
+#   Get Books (Shelfmark)              http://<host>:8084  - search + request books; downloads land in Books automatically
+#   Prowlarr                           http://<host>:9696  - indexers that Get Books searches
+#   qBittorrent                        http://<host>:8080  - downloads, only ever through the VPN (gluetun)
+# Settings live in .env (run ./setup.sh). Audiobooks: COMPOSE_PROFILES=audiobooks in .env.
+
+services:
+  calibre-web-automated:
+    image: crocodilestick/calibre-web-automated:latest
+    container_name: calibre-web-automated
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - ./config/calibre-web-automated:/config
+      - ${DATA_DIR}/books/library:/calibre-library
+      # CWA imports and then DELETES whatever lands here - never point it at a real library.
+      - ${DATA_DIR}/downloads/ebooks:/cwa-book-ingest
+    ports:
+      - "8083:8083"
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  shelfmark:
+    image: ghcr.io/calibrain/shelfmark-lite:v1.5.1
+    container_name: shelfmark
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - BOOK_LANGUAGE=${BOOK_LANGUAGE}
+      # Same logins as Books: CWA users sign in here, CWA admins are Shelfmark admins.
+      - AUTH_METHOD=cwa
+      - CALIBRE_WEB_URL=${BOOKS_URL}
+      - LIBRARY_CHECK_CALIBRE_ENABLED=true
+      - ONBOARDING=false
+      # Only set true behind HTTPS - over plain http it breaks the login cookie.
+      - SESSION_COOKIE_SECURE=${HTTPS}
+      - USING_EXTERNAL_BYPASSER=true
+      - EXT_BYPASSER_URL=http://byparr:8191
+    volumes:
+      - ./config/shelfmark:/config
+      - ${DATA_DIR}/downloads/ebooks:/books
+      - ${DATA_DIR}/books/audiobooks:/audiobooks
+      # Same path qBittorrent saves to, so Shelfmark can find finished downloads.
+      - ${DATA_DIR}/downloads:/data/downloads
+      # A file mount: CWA must have created app.db first, or Docker makes a directory here (setup.sh handles it).
+      - ./config/calibre-web-automated/app.db:/auth/app.db:ro
+      - ${DATA_DIR}/books/library:/calibre-library:ro
+    ports:
+      - "8084:8084"
+    depends_on:
+      - calibre-web-automated
+    restart: unless-stopped
+
+  # Gets past Cloudflare "are you human" pages for Shelfmark and Prowlarr (FlareSolverr-compatible).
+  byparr:
+    image: ghcr.io/thephaseless/byparr:latest
+    container_name: byparr
+    environment:
+      - TZ=${TZ}
+    # Headless Firefox needs more than Docker's 64MB default.
+    shm_size: 2gb
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: prowlarr
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - ./config/prowlarr:/config
+    ports:
+      - "9696:9696"
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  # VPN for qBittorrent. Any provider gluetun supports: https://github.com/qdm12/gluetun-wiki
+  gluetun:
+    image: qmcgaw/gluetun:latest
+    container_name: gluetun
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - TZ=${TZ}
+      - VPN_SERVICE_PROVIDER=${VPN_SERVICE_PROVIDER}
+      - VPN_TYPE=wireguard
+      - WIREGUARD_PRIVATE_KEY=${WIREGUARD_PRIVATE_KEY}
+      - WIREGUARD_ADDRESSES=${WIREGUARD_ADDRESSES}
+      - SERVER_COUNTRIES=${VPN_SERVER_COUNTRIES}
+    volumes:
+      - ./config/gluetun:/gluetun
+    ports:
+      - "8080:8080"   # qBittorrent web UI (qBittorrent shares gluetun's network)
+    restart: unless-stopped
+
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    # All traffic goes through the VPN; if the VPN drops, qBittorrent has no internet.
+    network_mode: service:gluetun
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - WEBUI_PORT=8080
+    volumes:
+      - ./config/qbittorrent:/config
+      - ${DATA_DIR}/downloads:/data/downloads
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  audiobookshelf:
+    profiles: ["audiobooks"]
+    image: ghcr.io/advplyr/audiobookshelf:latest
+    container_name: audiobookshelf
+    environment:
+      - TZ=${TZ}
+    volumes:
+      - ./config/audiobookshelf/config:/config
+      - ./config/audiobookshelf/metadata:/metadata
+      - ${DATA_DIR}/books/audiobooks:/audiobooks
+    ports:
+      - "13378:80"
+    restart: unless-stopped
